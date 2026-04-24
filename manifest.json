@@ -1,0 +1,10 @@
+{
+  "id": "smart-connections-bpmn",
+  "name": "Smart Connections BPMN",
+  "author": "Adam Lipowski",
+  "authorUrl": "https://github.com/S1ngl3-x",
+  "description": "Adds BPMN file indexing support to Smart Connections. Parses .bpmn files so they appear in your connections.",
+  "minAppVersion": "1.1.0",
+  "isDesktopOnly": false,
+  "version": "0.1.0"
+}
