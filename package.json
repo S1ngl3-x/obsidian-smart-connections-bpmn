@@ -5,10 +5,13 @@
   "description": "BPMN file indexing for Smart Connections",
   "main": "main.js",
   "scripts": {
-    "build": "node esbuild.js"
+    "build": "node esbuild.js",
+    "test": "vitest run"
   },
   "devDependencies": {
     "esbuild": "^0.21.0",
-    "obsidian": "latest"
+    "jsdom": "^29.0.2",
+    "obsidian": "latest",
+    "vitest": "^4.1.5"
   }
 }

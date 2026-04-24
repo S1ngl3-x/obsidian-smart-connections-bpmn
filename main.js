@@ -28,7 +28,7 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 
 // src/bpmn_source_adapter.js
-var BpmnSourceContentAdapter = class {
+var _BpmnSourceContentAdapter = class _BpmnSourceContentAdapter {
   constructor(item) {
     this.item = item;
   }
@@ -187,6 +187,291 @@ var BpmnSourceContentAdapter = class {
     return docs.map((d) => d.textContent?.trim()).filter(Boolean).join("\n");
   }
   /**
+   * Build a lookup map of element ID → { name, type } for all elements in a container.
+   * Searches all descendants (including inside sub-processes) for cross-reference resolution.
+   */
+  build_id_map(container) {
+    const map = /* @__PURE__ */ new Map();
+    const all = Array.from(container.querySelectorAll("*"));
+    for (const el of all) {
+      const id = el.getAttribute("id");
+      if (id) {
+        map.set(id, { name: el.getAttribute("name")?.trim() || "", type: el.localName });
+      }
+    }
+    return map;
+  }
+  /**
+   * Query direct child elements by local name (not descendants).
+   * Use this when extracting elements at a specific process/sub-process level.
+   */
+  query_local_direct(container, local_name) {
+    return Array.from(container.children).filter(
+      (el) => el.localName === local_name
+    );
+  }
+  /**
+   * Extract gateway branching information from a container.
+   * Returns Map<gateway_id, { name, type, branches: [{ condition, target_name, target_type }] }>
+   */
+  extract_gateway_branches(container, id_map) {
+    const gateways = /* @__PURE__ */ new Map();
+    for (const type of _BpmnSourceContentAdapter.GATEWAY_TYPES) {
+      for (const gw of this.query_local_direct(container, type)) {
+        const id = gw.getAttribute("id");
+        const kind = type.replace("Gateway", "");
+        gateways.set(id, {
+          name: this.get_label(gw) || id,
+          type: kind.charAt(0).toLowerCase() + kind.slice(1),
+          branches: []
+        });
+      }
+    }
+    for (const flow of this.query_local_direct(container, "sequenceFlow")) {
+      const source_id = flow.getAttribute("sourceRef");
+      const gw = gateways.get(source_id);
+      if (!gw) continue;
+      const target_id = flow.getAttribute("targetRef");
+      const target = id_map.get(target_id);
+      gw.branches.push({
+        condition: this.get_label(flow),
+        target_name: target?.name || target_id,
+        target_type: target?.type || ""
+      });
+    }
+    return gateways;
+  }
+  /**
+   * Extract non-gateway sequence flows as source → target pairs.
+   * Skips flows originating from gateways (handled by extract_gateway_branches).
+   * Skips flows where both source and target have no name.
+   */
+  extract_linear_flows(container, id_map, gateway_ids) {
+    const flows = [];
+    for (const flow of this.query_local_direct(container, "sequenceFlow")) {
+      const source_id = flow.getAttribute("sourceRef");
+      if (gateway_ids.has(source_id)) continue;
+      const target_id = flow.getAttribute("targetRef");
+      const source = id_map.get(source_id);
+      const target = id_map.get(target_id);
+      if (!source?.name && !target?.name) continue;
+      flows.push({
+        source_name: source?.name || source_id,
+        source_type: source?.type || "",
+        target_name: target?.name || target_id,
+        target_type: target?.type || ""
+      });
+    }
+    return flows;
+  }
+  /**
+   * Extract boundary events with host task context and outgoing target.
+   * Returns [{ host_name, event_name, event_kind, target_name }]
+   */
+  extract_boundary_events(container, id_map) {
+    const results = [];
+    const flow_map = /* @__PURE__ */ new Map();
+    for (const flow of this.query_local_direct(container, "sequenceFlow")) {
+      flow_map.set(flow.getAttribute("sourceRef"), flow.getAttribute("targetRef"));
+    }
+    for (const be of this.query_local_direct(container, "boundaryEvent")) {
+      const host_id = be.getAttribute("attachedToRef");
+      const host = id_map.get(host_id);
+      const event_name = this.get_label(be) || be.getAttribute("id");
+      let event_kind = "";
+      for (const child of Array.from(be.children)) {
+        const ln = child.localName;
+        if (ln.endsWith("EventDefinition")) {
+          event_kind = ln.replace("EventDefinition", "").replace(/([A-Z])/g, " $1").trim().toLowerCase();
+          break;
+        }
+      }
+      const target_id = flow_map.get(be.getAttribute("id"));
+      const target = target_id ? id_map.get(target_id) : null;
+      results.push({
+        host_name: host?.name || host_id || "",
+        event_name,
+        event_kind: event_kind || "unknown",
+        target_name: target?.name || ""
+      });
+    }
+    return results;
+  }
+  /**
+   * Extract data associations between tasks and data objects.
+   * Returns [{ task_name, data_name, direction: 'produces'|'consumes' }]
+   */
+  extract_data_flows(container, id_map) {
+    const results = [];
+    const task_types = [..._BpmnSourceContentAdapter.TASK_TYPES, "subProcess"];
+    for (const type of task_types) {
+      for (const task of this.query_local_direct(container, type)) {
+        const task_name = this.get_label(task) || task.getAttribute("id");
+        for (const assoc of this.query_local(task, "dataOutputAssociation")) {
+          const target_refs = this.query_local(assoc, "targetRef");
+          if (target_refs.length > 0) {
+            const data_id = target_refs[0].textContent?.trim();
+            const data = id_map.get(data_id);
+            if (data?.name) {
+              results.push({ task_name, data_name: data.name, direction: "produces" });
+            }
+          }
+        }
+        for (const assoc of this.query_local(task, "dataInputAssociation")) {
+          const source_refs = this.query_local(assoc, "sourceRef");
+          if (source_refs.length > 0) {
+            const data_id = source_refs[0].textContent?.trim();
+            const data = id_map.get(data_id);
+            if (data?.name) {
+              results.push({ task_name, data_name: data.name, direction: "consumes" });
+            }
+          }
+        }
+      }
+    }
+    return results;
+  }
+  /**
+   * Get loop/multi-instance marker for a task element.
+   * Returns a descriptor string or empty string if none.
+   */
+  get_loop_marker(task_el) {
+    const mi = this.query_local(task_el, "multiInstanceLoopCharacteristics");
+    if (mi.length > 0) {
+      return mi[0].getAttribute("isSequential") === "true" ? "sequential multi-instance" : "parallel multi-instance";
+    }
+    const sl = this.query_local(task_el, "standardLoopCharacteristics");
+    if (sl.length > 0) return "loop";
+    return "";
+  }
+  /**
+   * Extract all sections for a process or sub-process container.
+   * @param {Element} container - process or subProcess element
+   * @param {Map} id_map - pre-built ID→{name,type} map for the root process
+   * @param {string} h - heading prefix ('##' for top-level, '###' for sub-process, etc.)
+   * @returns {string[]} - markdown lines
+   */
+  extract_container_sections(container, id_map, h) {
+    const sections = [];
+    const tasks = [];
+    for (const type of _BpmnSourceContentAdapter.TASK_TYPES) {
+      tasks.push(...this.query_local_direct(container, type));
+    }
+    if (tasks.length > 0) {
+      sections.push(`${h} Tasks`);
+      for (const task of tasks) {
+        const label = this.get_label(task) || task.getAttribute("id");
+        const loop_marker = this.get_loop_marker(task);
+        const type_parts = [];
+        if (task.localName !== "task") type_parts.push(task.localName);
+        if (loop_marker) type_parts.push(loop_marker);
+        const type_label = type_parts.length > 0 ? ` (${type_parts.join(", ")})` : "";
+        const doc = this.get_documentation(task);
+        sections.push(`- ${label}${type_label}`);
+        if (doc) sections.push(`  ${doc}`);
+      }
+      sections.push("");
+    }
+    const sub_processes = this.query_local_direct(container, "subProcess");
+    for (const sp of sub_processes) {
+      const label = this.get_label(sp) || sp.getAttribute("id");
+      const doc = this.get_documentation(sp);
+      sections.push(`${h} Sub-Process: ${label}`);
+      if (doc) {
+        sections.push("");
+        sections.push(doc);
+      }
+      sections.push("");
+      const nested_h = h + "#";
+      const nested_sections = this.extract_container_sections(sp, id_map, nested_h);
+      sections.push(...nested_sections);
+    }
+    const event_types = ["startEvent", "endEvent", "intermediateCatchEvent", "intermediateThrowEvent"];
+    const events = [];
+    for (const type of event_types) {
+      events.push(...this.query_local_direct(container, type).map((el) => ({ el, type })));
+    }
+    if (events.length > 0) {
+      sections.push(`${h} Events`);
+      for (const { el, type } of events) {
+        const label = this.get_label(el) || el.getAttribute("id");
+        const event_kind = type.replace("Event", "").replace(/([A-Z])/g, " $1").trim();
+        sections.push(`- ${event_kind}: ${label}`);
+      }
+      sections.push("");
+    }
+    const gateways = [];
+    for (const type of _BpmnSourceContentAdapter.GATEWAY_TYPES) {
+      gateways.push(...this.query_local_direct(container, type).map((el) => ({ el, type })));
+    }
+    if (gateways.length > 0) {
+      sections.push(`${h} Gateways`);
+      for (const { el, type } of gateways) {
+        const label = this.get_label(el) || el.getAttribute("id");
+        const gw_kind = type.replace("Gateway", "").replace(/([A-Z])/g, " $1").trim();
+        sections.push(`- ${gw_kind}: ${label}`);
+      }
+      sections.push("");
+    }
+    const gateway_branches = this.extract_gateway_branches(container, id_map);
+    const gateways_with_branches = [...gateway_branches.values()].filter((gw) => gw.branches.length > 0);
+    if (gateways_with_branches.length > 0) {
+      sections.push(`${h} Gateway Branches`);
+      for (const gw of gateways_with_branches) {
+        sections.push(`- "${gw.name}" (${gw.type}):`);
+        for (const b of gw.branches) {
+          const cond = b.condition ? `[${b.condition}] \u2192 ` : "";
+          const type_suffix = b.target_type ? ` (${b.target_type})` : "";
+          sections.push(`  - ${cond}"${b.target_name}"${type_suffix}`);
+        }
+      }
+      sections.push("");
+    }
+    const gateway_ids = new Set(gateway_branches.keys());
+    const linear_flows = this.extract_linear_flows(container, id_map, gateway_ids);
+    if (linear_flows.length > 0) {
+      sections.push(`${h} Process Flow`);
+      for (const f of linear_flows) {
+        const src_type = f.source_type ? ` (${f.source_type})` : "";
+        const tgt_type = f.target_type ? ` (${f.target_type})` : "";
+        sections.push(`- "${f.source_name}"${src_type} \u2192 "${f.target_name}"${tgt_type}`);
+      }
+      sections.push("");
+    }
+    const boundary_events = this.extract_boundary_events(container, id_map);
+    if (boundary_events.length > 0) {
+      sections.push(`${h} Boundary Events`);
+      for (const be of boundary_events) {
+        const target_part = be.target_name ? ` \u2192 "${be.target_name}"` : "";
+        sections.push(`- "${be.host_name}": on ${be.event_kind} "${be.event_name}"${target_part}`);
+      }
+      sections.push("");
+    }
+    const data_flows = this.extract_data_flows(container, id_map);
+    if (data_flows.length > 0) {
+      sections.push(`${h} Data Flow`);
+      for (const df of data_flows) {
+        sections.push(`- "${df.task_name}" ${df.direction} "${df.data_name}"`);
+      }
+      sections.push("");
+    }
+    const data_objects = this.query_local_direct(container, "dataObjectReference");
+    const data_stores = this.query_local_direct(container, "dataStoreReference");
+    if (data_objects.length > 0 || data_stores.length > 0) {
+      sections.push(`${h} Data`);
+      for (const d of data_objects) {
+        const label = this.get_label(d) || d.getAttribute("id");
+        sections.push(`- Data Object: ${label}`);
+      }
+      for (const d of data_stores) {
+        const label = this.get_label(d) || d.getAttribute("id");
+        sections.push(`- Data Store: ${label}`);
+      }
+      sections.push("");
+    }
+    return sections;
+  }
+  /**
    * Convert BPMN XML to structured markdown.
    */
   bpmn_to_markdown(xml_string) {
@@ -216,91 +501,9 @@ var BpmnSourceContentAdapter = class {
         sections.push(process_doc);
       }
       sections.push("");
-      const task_types = ["task", "userTask", "serviceTask", "scriptTask", "manualTask", "sendTask", "receiveTask", "businessRuleTask"];
-      const tasks = [];
-      for (const type of task_types) {
-        tasks.push(...this.query_local(process, type));
-      }
-      if (tasks.length > 0) {
-        sections.push("## Tasks");
-        for (const task of tasks) {
-          const label = this.get_label(task) || task.getAttribute("id");
-          const type_label = task.localName === "task" ? "" : ` (${task.localName})`;
-          const doc2 = this.get_documentation(task);
-          sections.push(`- ${label}${type_label}`);
-          if (doc2) sections.push(`  ${doc2}`);
-        }
-        sections.push("");
-      }
-      const sub_processes = this.query_local(process, "subProcess");
-      if (sub_processes.length > 0) {
-        sections.push("## Sub-Processes");
-        for (const sp of sub_processes) {
-          const label = this.get_label(sp) || sp.getAttribute("id");
-          const doc2 = this.get_documentation(sp);
-          sections.push(`- ${label}`);
-          if (doc2) sections.push(`  ${doc2}`);
-        }
-        sections.push("");
-      }
-      const event_types = [
-        "startEvent",
-        "endEvent",
-        "intermediateCatchEvent",
-        "intermediateThrowEvent",
-        "boundaryEvent"
-      ];
-      const events = [];
-      for (const type of event_types) {
-        events.push(...this.query_local(process, type).map((el) => ({ el, type })));
-      }
-      if (events.length > 0) {
-        sections.push("## Events");
-        for (const { el, type } of events) {
-          const label = this.get_label(el) || el.getAttribute("id");
-          const event_kind = type.replace("Event", "").replace(/([A-Z])/g, " $1").trim();
-          sections.push(`- ${event_kind}: ${label}`);
-        }
-        sections.push("");
-      }
-      const gateway_types = ["exclusiveGateway", "parallelGateway", "inclusiveGateway", "eventBasedGateway", "complexGateway"];
-      const gateways = [];
-      for (const type of gateway_types) {
-        gateways.push(...this.query_local(process, type).map((el) => ({ el, type })));
-      }
-      if (gateways.length > 0) {
-        sections.push("## Gateways");
-        for (const { el, type } of gateways) {
-          const label = this.get_label(el) || el.getAttribute("id");
-          const gw_kind = type.replace("Gateway", "").replace(/([A-Z])/g, " $1").trim();
-          sections.push(`- ${gw_kind}: ${label}`);
-        }
-        sections.push("");
-      }
-      const data_objects = this.query_local(process, "dataObjectReference");
-      const data_stores = this.query_local(process, "dataStoreReference");
-      if (data_objects.length > 0 || data_stores.length > 0) {
-        sections.push("## Data");
-        for (const d of data_objects) {
-          const label = this.get_label(d) || d.getAttribute("id");
-          sections.push(`- Data Object: ${label}`);
-        }
-        for (const d of data_stores) {
-          const label = this.get_label(d) || d.getAttribute("id");
-          sections.push(`- Data Store: ${label}`);
-        }
-        sections.push("");
-      }
-      const flows = this.query_local(process, "sequenceFlow");
-      const named_flows = flows.filter((f) => this.get_label(f));
-      if (named_flows.length > 0) {
-        sections.push("## Flow Conditions");
-        for (const flow of named_flows) {
-          const label = this.get_label(flow);
-          sections.push(`- ${label}`);
-        }
-        sections.push("");
-      }
+      const id_map = this.build_id_map(process);
+      const container_sections = this.extract_container_sections(process, id_map, "##");
+      sections.push(...container_sections);
     }
     const annotations = this.query_local(doc, "textAnnotation");
     if (annotations.length > 0) {
@@ -335,7 +538,10 @@ var BpmnSourceContentAdapter = class {
     return links;
   }
 };
-__publicField(BpmnSourceContentAdapter, "extensions", ["bpmn"]);
+__publicField(_BpmnSourceContentAdapter, "extensions", ["bpmn"]);
+__publicField(_BpmnSourceContentAdapter, "GATEWAY_TYPES", ["exclusiveGateway", "parallelGateway", "inclusiveGateway", "eventBasedGateway", "complexGateway"]);
+__publicField(_BpmnSourceContentAdapter, "TASK_TYPES", ["task", "userTask", "serviceTask", "scriptTask", "manualTask", "sendTask", "receiveTask", "businessRuleTask"]);
+var BpmnSourceContentAdapter = _BpmnSourceContentAdapter;
 
 // src/main.js
 var SmartConnectionsBpmnPlugin = class extends import_obsidian.Plugin {
