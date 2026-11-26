@@ -1,5 +1,5 @@
 import { Plugin } from 'obsidian';
-import { BpmnSourceContentAdapter } from './bpmn_source_adapter.js';
+import { register_bpmn_adapter, index_bpmn_files } from './register.js';
 
 export default class SmartConnectionsBpmnPlugin extends Plugin {
 
@@ -21,19 +21,8 @@ export default class SmartConnectionsBpmnPlugin extends Plugin {
       return;
     }
 
-    // Use SmartEnv.add_main() to merge our adapter config into the environment.
-    // version must be included — the config getter requires it and checks minor >= 4.
-    const SmartEnv = env.constructor;
-    SmartEnv.add_main(this, {
-      version: "2.4.0",
-      collections: {
-        smart_sources: {
-          source_adapters: {
-            bpmn: BpmnSourceContentAdapter,
-          },
-        },
-      },
-    });
+    register_bpmn_adapter(this, env);
+    env.constructor.wait_for().then(index_bpmn_files);
 
     console.log('Smart Connections BPMN: Registered .bpmn adapter');
   }

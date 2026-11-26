@@ -2,8 +2,8 @@
  * BpmnSourceContentAdapter
  *
  * A self-contained source content adapter for .bpmn files.
- * Implements the same interface as FileSourceContentAdapter from smart-sources
- * without extending it, so no external dependencies are needed.
+ * Overrides FileSourceContentAdapter from smart-sources without importing it.
+ * main.js links the two classes at runtime, so no external dependencies are needed.
  *
  * Parses BPMN 2.0 XML and produces structured markdown for embedding and display.
  */
@@ -38,6 +38,11 @@ export class BpmnSourceContentAdapter {
   get can_import() {
     return !!this.item.file;
   }
+
+  // SmartSource.get_embed_input() throws without this key. read() already returns markdown.
+  get embed_input_action_key() { return 'source_get_embed_input_markdown'; }
+
+  get outdated() { return this.should_import; }
 
   /**
    * MurmurHash3 32-bit (alphanumeric output).

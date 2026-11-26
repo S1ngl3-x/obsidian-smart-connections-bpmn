@@ -58,6 +58,13 @@ var _BpmnSourceContentAdapter = class _BpmnSourceContentAdapter {
   get can_import() {
     return !!this.item.file;
   }
+  // SmartSource.get_embed_input() throws without this key. read() already returns markdown.
+  get embed_input_action_key() {
+    return "source_get_embed_input_markdown";
+  }
+  get outdated() {
+    return this.should_import;
+  }
   /**
    * MurmurHash3 32-bit (alphanumeric output).
    * Matches the upstream smart-sources hashing convention.
@@ -543,6 +550,46 @@ __publicField(_BpmnSourceContentAdapter, "GATEWAY_TYPES", ["exclusiveGateway", "
 __publicField(_BpmnSourceContentAdapter, "TASK_TYPES", ["task", "userTask", "serviceTask", "scriptTask", "manualTask", "sendTask", "receiveTask", "businessRuleTask"]);
 var BpmnSourceContentAdapter = _BpmnSourceContentAdapter;
 
+// src/register.js
+function host_file_adapter(env) {
+  const canvas = env.config?.collections?.smart_sources?.source_adapters?.canvas;
+  const base = canvas && Object.getPrototypeOf(canvas);
+  return typeof base?.init_items === "function" ? base : null;
+}
+function register_bpmn_adapter(main, env) {
+  const SmartEnv = env.constructor;
+  const base = host_file_adapter(env);
+  if (base) {
+    Object.setPrototypeOf(BpmnSourceContentAdapter, base);
+    Object.setPrototypeOf(BpmnSourceContentAdapter.prototype, base.prototype);
+  } else {
+    console.warn("Smart Connections BPMN: FileSourceContentAdapter not found. The adapter runs without its base class.");
+  }
+  SmartEnv.add_main(main, {
+    version: SmartEnv.version,
+    collections: {
+      smart_sources: {
+        source_adapters: {
+          bpmn: BpmnSourceContentAdapter
+        }
+      }
+    }
+  });
+}
+async function index_bpmn_files(env) {
+  const sources = env.smart_sources;
+  if (!sources) return;
+  sources._source_adapters = null;
+  const paths = Object.keys(sources.fs.files).filter((path) => path.endsWith(".bpmn"));
+  paths.forEach((path) => {
+    if (sources.items[path]) sources.items[path]._source_adapter = null;
+  });
+  const new_paths = paths.filter((path) => !sources.items[path]);
+  if (!new_paths.length) return;
+  new_paths.forEach((path) => sources.init_file_path(path));
+  await sources.process_source_import_queue();
+}
+
 // src/main.js
 var SmartConnectionsBpmnPlugin = class extends import_obsidian.Plugin {
   onload() {
@@ -558,17 +605,8 @@ var SmartConnectionsBpmnPlugin = class extends import_obsidian.Plugin {
       );
       return;
     }
-    const SmartEnv = env.constructor;
-    SmartEnv.add_main(this, {
-      version: "2.4.0",
-      collections: {
-        smart_sources: {
-          source_adapters: {
-            bpmn: BpmnSourceContentAdapter
-          }
-        }
-      }
-    });
+    register_bpmn_adapter(this, env);
+    env.constructor.wait_for().then(index_bpmn_files);
     console.log("Smart Connections BPMN: Registered .bpmn adapter");
   }
   onunload() {
