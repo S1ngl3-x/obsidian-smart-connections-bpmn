@@ -57,3 +57,59 @@ owner --> e2
     expect(to_markdown('@startuml\nskinparam roundcorner 15\n@enduml')).toBe('');
   });
 });
+
+describe('PumlSourceContentAdapter alias replacement', () => {
+  it('does not replace an alias in quotes, comments, labels after a colon, or note text', () => {
+    const result = to_markdown(`@startuml
+state "Active" as active
+state "Hard blocked" as hard
+active --> hard : hard block
+hard : value = "active"
+' the active state
+note right of hard
+  not yet active
+  }
+end note
+legend
+  active means usable
+end legend
+@enduml`);
+    expect(result).toBe(`state "Active" as active
+state "Hard blocked" as hard
+"Active" --> "Hard blocked" : hard block
+"Hard blocked" : value = "active"
+' the active state
+note right of "Hard blocked"
+not yet active
+}
+end note
+legend
+active means usable
+end legend`);
+  });
+
+  it('reads the alias-first form with a label on two lines', () => {
+    const result = to_markdown(`@startuml
+actor "Finance Specialist" as FS
+usecase UC1 as "Export invoices
+from the invoice list"
+FS --> UC1
+@enduml`);
+    expect(result).toContain('"Finance Specialist" --> "Export invoices from the invoice list"');
+  });
+
+  it('writes a line break in a label as a space', () => {
+    expect(to_markdown('@startuml\nactor "Workspace\\nOwner" as WO\nWO --> WO\n@enduml'))
+      .toContain('"Workspace Owner" --> "Workspace Owner"');
+  });
+});
+
+describe('PumlSourceContentAdapter style blocks', () => {
+  it('removes a style block with nested braces', () => {
+    expect(to_markdown('@startuml\n<style>\nclassDiagram {\nclass {\n}\n}\n</style>\nclass A\n@enduml')).toBe('class A');
+  });
+
+  it('removes a skinparam block with nested braces', () => {
+    expect(to_markdown('@startuml\nskinparam class {\nBackgroundColor<<x>> {\na\n}\nFontSize 1\n}\nclass A\n@enduml')).toBe('class A');
+  });
+});

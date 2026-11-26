@@ -144,6 +144,9 @@ export class FileTextSourceContentAdapter {
 
     this.item.loaded_at = Date.now();
     this.item.queue_save();
+    // The saved vector belongs to the old hash.
+    this.item._embed_input = null;
+    this.item.queue_embed?.();
   }
 
   to_markdown(raw) { return raw; }

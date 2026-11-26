@@ -151,6 +151,8 @@ var FileTextSourceContentAdapter = class {
     };
     this.item.loaded_at = Date.now();
     this.item.queue_save();
+    this.item._embed_input = null;
+    this.item.queue_embed?.();
   }
   to_markdown(raw) {
     return raw;
@@ -568,43 +570,68 @@ var BpmnSourceContentAdapter = _BpmnSourceContentAdapter;
 
 // src/puml_source_adapter.js
 var NOISE_LINE = /^(@end\w+|!|skinparam\b|hide\b|show\b|scale\b|(left to right|top to bottom) direction\b)/;
-var NOISE_BLOCK_START = /^(skinparam\b.*\{|<style>)$/;
-var NOISE_BLOCK_END = /^(\}|<\/style>)$/;
 var MACRO_ALIAS = /^\w+\(\s*(\w+)\s*,\s*"([^"]+)"/;
-var AS_ALIAS = /"([^"]+)"\s+as\s+(\w+)/;
+var LABEL_AS_ALIAS = /"([^"]+)"\s+as\s+(\w+)/;
+var ALIAS_AS_LABEL = /\b(\w+)\s+as\s+"([^"]+)"/;
+var TEXT_BLOCK_START = /^(legend\b|note\b(?!.*[:"])|(title|header|footer)$)/;
+var TEXT_BLOCK_END = /^end ?(legend|note|title|header|footer)\b/;
 var PumlSourceContentAdapter = class extends FileTextSourceContentAdapter {
   to_markdown(raw) {
     const lines = [];
     const labels = /* @__PURE__ */ new Map();
-    let in_noise_block = false;
-    for (const raw_line of raw.split("\n")) {
-      const line = raw_line.trim();
-      if (in_noise_block) {
-        if (NOISE_BLOCK_END.test(line)) in_noise_block = false;
+    let skinparam_depth = 0;
+    let in_style = false;
+    let in_text_block = false;
+    for (const line of this.statements(raw)) {
+      if (in_style) {
+        in_style = line !== "</style>";
         continue;
       }
-      if (NOISE_BLOCK_START.test(line)) {
-        in_noise_block = true;
+      if (skinparam_depth) {
+        if (line.endsWith("{")) skinparam_depth++;
+        else if (line === "}") skinparam_depth--;
         continue;
       }
-      if (!line || NOISE_LINE.test(line)) continue;
+      if (in_text_block) {
+        in_text_block = !TEXT_BLOCK_END.test(line);
+        lines.push({ text: line, keep: true });
+        continue;
+      }
+      if (line === "<style>") in_style = true;
+      else if (/^skinparam\b.*\{$/.test(line)) skinparam_depth = 1;
+      if (in_style || skinparam_depth || NOISE_LINE.test(line)) continue;
       const start = line.match(/^@start\w+\s*(.*)$/);
       if (start) {
-        if (start[1]) lines.push({ text: `# ${start[1]}`, defines_alias: true });
+        if (start[1]) lines.push({ text: `# ${start[1].replace(/"/g, "")}`, keep: true });
         continue;
       }
-      const macro = line.match(MACRO_ALIAS);
-      const as = line.match(AS_ALIAS);
-      if (macro) labels.set(macro[1], macro[2]);
-      else if (as) labels.set(as[2], as[1]);
-      lines.push({ text: line, defines_alias: !!(macro || as) });
+      const [, alias, label] = line.match(MACRO_ALIAS) || line.match(ALIAS_AS_LABEL) || [];
+      const [, as_label, as_alias] = alias ? [] : line.match(LABEL_AS_ALIAS) || [];
+      if (alias || as_alias) labels.set(alias || as_alias, (label || as_label).replace(/\\n/g, " "));
+      in_text_block = TEXT_BLOCK_START.test(line);
+      lines.push({ text: line, keep: !!(alias || as_alias) || line.startsWith("'") });
     }
     if (!labels.size) return lines.map((line) => line.text).join("\n");
-    const alias_re = new RegExp(`\\b(${[...labels.keys()].join("|")})\\b`, "g");
-    return lines.map((line) => {
-      if (line.defines_alias) return line.text;
-      return line.text.replace(alias_re, (alias) => `"${labels.get(alias)}"`);
+    const alias_re = new RegExp(`"[^"]*"|\\b(${[...labels.keys()].join("|")})\\b`, "g");
+    return lines.map(({ text, keep }) => {
+      if (keep) return text;
+      const colon = text.indexOf(" : ");
+      const head = colon < 0 ? text : text.slice(0, colon);
+      return head.replace(alias_re, (match, alias) => alias ? `"${labels.get(alias)}"` : match) + text.slice(head.length);
     }).join("\n");
+  }
+  // Trimmed non-empty lines. A line with an open quote joins the next lines.
+  statements(raw) {
+    const result = [];
+    let open = "";
+    for (const raw_line of raw.split("\n")) {
+      const line = open ? `${open} ${raw_line.trim()}` : raw_line.trim();
+      const is_open = !line.startsWith("'") && (line.match(/"/g) || []).length % 2 === 1;
+      open = is_open ? line : "";
+      if (line && !is_open) result.push(line);
+    }
+    if (open) result.push(open);
+    return result;
   }
 };
 __publicField(PumlSourceContentAdapter, "extensions", ["puml", "plantuml"]);
