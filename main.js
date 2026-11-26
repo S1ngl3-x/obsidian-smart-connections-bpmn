@@ -587,27 +587,26 @@ async function index_bpmn_files(env) {
   const new_paths = paths.filter((path) => !sources.items[path]);
   if (!new_paths.length) return;
   new_paths.forEach((path) => sources.init_file_path(path));
-  await sources.process_source_import_queue();
+  sources.mark_embed_queue_dirty?.();
+  await sources.process_load_queue();
 }
 
 // src/main.js
 var SmartConnectionsBpmnPlugin = class extends import_obsidian.Plugin {
   onload() {
-    this.app.workspace.onLayoutReady(() => {
-      this.register_adapter();
-    });
+    if (this.register_adapter()) return;
+    const timer = window.setInterval(() => {
+      if (this.register_adapter()) window.clearInterval(timer);
+    }, 100);
+    this.registerInterval(timer);
   }
   register_adapter() {
     const env = window.smart_env;
-    if (!env) {
-      console.warn(
-        "Smart Connections BPMN: SmartEnv not found. Make sure Smart Connections is installed and enabled."
-      );
-      return;
-    }
+    if (!env) return false;
     register_bpmn_adapter(this, env);
     env.constructor.wait_for().then(index_bpmn_files);
     console.log("Smart Connections BPMN: Registered .bpmn adapter");
+    return true;
   }
   onunload() {
     window.smart_env?.unload_main?.(this);

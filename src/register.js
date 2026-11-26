@@ -40,5 +40,7 @@ export async function index_bpmn_files(env) {
   const new_paths = paths.filter((path) => !sources.items[path]);
   if (!new_paths.length) return;
   new_paths.forEach((path) => sources.init_file_path(path));
-  await sources.process_source_import_queue();
+  sources.mark_embed_queue_dirty?.();
+  // Loads saved data first. An import without it erases the saved embedding references.
+  await sources.process_load_queue();
 }

@@ -36,7 +36,7 @@ describe('register_bpmn_adapter', () => {
 });
 
 describe('index_bpmn_files', () => {
-  it('creates a source for each .bpmn file and runs the import queue once', async () => {
+  it('creates a source for each .bpmn file and runs the load queue once', async () => {
     const created = [];
     let imports = 0;
     const smart_sources = {
@@ -44,7 +44,7 @@ describe('index_bpmn_files', () => {
       items: {},
       fs: { files: { 'a.bpmn': {}, 'b.md': {}, 'dir/c.bpmn': {} } },
       init_file_path(path) { created.push(path); this.items[path] = {}; },
-      async process_source_import_queue() { imports++; },
+      async process_load_queue() { imports++; },
     };
     await index_bpmn_files({ smart_sources });
     expect(created).toEqual(['a.bpmn', 'dir/c.bpmn']);
