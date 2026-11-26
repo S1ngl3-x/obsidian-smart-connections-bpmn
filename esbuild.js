@@ -12,6 +12,6 @@ esbuild.build({
     'process.env.NODE_ENV': '"production"',
   },
   banner: {
-    js: `/*! obsidian-smart-connections-bpmn v0.1.0 */`,
+    js: `/*! obsidian-smart-connections-bpmn v0.2.0 */`,
   },
 }).catch(() => process.exit(1));

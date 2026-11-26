@@ -4,6 +4,8 @@ A companion plugin for [Smart Connections](https://github.com/brianpetro/obsidia
 
 Drop `.bpmn` files into your vault and they become part of your Smart Connections — semantically linked to your notes, searchable, and surfaced in the connections sidebar.
 
+PlantUML files (`.puml`, `.plantuml`) get the same treatment. The plugin removes layout and style lines and replaces aliases with their labels. Example: `Rel_Flow(e1, e2)` becomes `Rel_Flow("Validate withdrawal", "Settle payment")`.
+
 ![Smart Connections BPMN showcase](showcase.png)
 
 ## How it works
@@ -55,7 +57,7 @@ Then copy `main.js`, `manifest.json`, and `styles.css` to `.obsidian/plugins/sma
 Open the Obsidian developer console (`Cmd+Option+I` on Mac, `Ctrl+Shift+I` on Windows/Linux) and look for:
 
 ```
-Smart Connections BPMN: Registered .bpmn adapter
+Smart Connections BPMN: Registered .bpmn and .puml adapters
 ```
 
 Once Smart Environment finishes indexing, BPMN files will appear in the connections sidebar when they're semantically related to the note you're viewing.
