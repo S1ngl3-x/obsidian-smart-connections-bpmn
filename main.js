@@ -1,4 +1,4 @@
-/*! obsidian-smart-connections-bpmn v0.1.0 */
+/*! obsidian-smart-connections-bpmn v0.2.0 */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -27,8 +27,8 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 
-// src/bpmn_source_adapter.js
-var _BpmnSourceContentAdapter = class _BpmnSourceContentAdapter {
+// src/file_text_source_adapter.js
+var FileTextSourceContentAdapter = class {
   constructor(item) {
     this.item = item;
   }
@@ -98,18 +98,18 @@ var _BpmnSourceContentAdapter = class _BpmnSourceContentAdapter {
       if (typeof content !== "string") return "";
       return content;
     } catch (err) {
-      console.warn(`BpmnSourceContentAdapter: Error reading ${this.file_path}:`, err);
+      console.warn(`FileTextSourceContentAdapter: Error reading ${this.file_path}:`, err);
       return "";
     }
   }
   /**
-   * Read and transform BPMN XML into structured markdown.
+   * Read the file and transform it into markdown.
    * This is what gets embedded and displayed in the connections sidebar.
    */
   async read(opts = {}) {
     const raw = await this._read_raw();
     if (!raw) return "";
-    const markdown = this.bpmn_to_markdown(raw);
+    const markdown = this.to_markdown(raw);
     if (!opts.no_hash) {
       this.data.last_read = {
         hash: this.create_hash(markdown),
@@ -120,17 +120,17 @@ var _BpmnSourceContentAdapter = class _BpmnSourceContentAdapter {
     return markdown;
   }
   /**
-   * Import the BPMN file — called by the smart-sources processing pipeline.
+   * Import the file — called by the smart-sources processing pipeline.
    * Parses metadata, extracts outlinks, and marks the file as imported.
    */
   async import() {
     if (!this.item.file) {
-      console.warn(`BpmnSourceContentAdapter: Skipping missing file: ${this.file_path}`);
+      console.warn(`FileTextSourceContentAdapter: Skipping missing file: ${this.file_path}`);
       return;
     }
     const raw = await this._read_raw();
     if (!raw) return;
-    const markdown = this.bpmn_to_markdown(raw);
+    const markdown = this.to_markdown(raw);
     const hash = this.create_hash(markdown);
     if (!this.data.last_read) this.data.last_read = {};
     this.data.last_read.hash = hash;
@@ -139,7 +139,7 @@ var _BpmnSourceContentAdapter = class _BpmnSourceContentAdapter {
     if (this.data.last_import?.hash === hash && Array.isArray(this.data.outlinks)) {
       return;
     }
-    this.data.outlinks = this.extract_outlinks_from_doc(this.parse_xml(raw));
+    this.data.outlinks = this.extract_outlinks(raw);
     const file_stat = this.item.file?.stat;
     const size = file_stat?.size ?? markdown.length;
     const mtime = file_stat?.mtime ?? 0;
@@ -151,6 +151,24 @@ var _BpmnSourceContentAdapter = class _BpmnSourceContentAdapter {
     };
     this.item.loaded_at = Date.now();
     this.item.queue_save();
+    this.item._embed_input = null;
+    this.item.queue_embed?.();
+  }
+  to_markdown(raw) {
+    return raw;
+  }
+  extract_outlinks(raw) {
+    return [];
+  }
+};
+
+// src/bpmn_source_adapter.js
+var _BpmnSourceContentAdapter = class _BpmnSourceContentAdapter extends FileTextSourceContentAdapter {
+  to_markdown(raw) {
+    return this.bpmn_to_markdown(raw);
+  }
+  extract_outlinks(raw) {
+    return this.extract_outlinks_from_doc(this.parse_xml(raw));
   }
   // ---------------------------------------------------------------------------
   // BPMN XML Parsing
@@ -550,37 +568,109 @@ __publicField(_BpmnSourceContentAdapter, "GATEWAY_TYPES", ["exclusiveGateway", "
 __publicField(_BpmnSourceContentAdapter, "TASK_TYPES", ["task", "userTask", "serviceTask", "scriptTask", "manualTask", "sendTask", "receiveTask", "businessRuleTask"]);
 var BpmnSourceContentAdapter = _BpmnSourceContentAdapter;
 
+// src/puml_source_adapter.js
+var NOISE_LINE = /^(@end\w+|!|skinparam\b|hide\b|show\b|scale\b|(left to right|top to bottom) direction\b)/;
+var MACRO_ALIAS = /^\w+\(\s*(\w+)\s*,\s*"([^"]+)"/;
+var LABEL_AS_ALIAS = /"([^"]+)"\s+as\s+(\w+)/;
+var ALIAS_AS_LABEL = /\b(\w+)\s+as\s+"([^"]+)"/;
+var TEXT_BLOCK_START = /^(legend\b|note\b(?!.*[:"])|(title|header|footer)$)/;
+var TEXT_BLOCK_END = /^end ?(legend|note|title|header|footer)\b/;
+var PumlSourceContentAdapter = class extends FileTextSourceContentAdapter {
+  to_markdown(raw) {
+    const lines = [];
+    const labels = /* @__PURE__ */ new Map();
+    let skinparam_depth = 0;
+    let in_style = false;
+    let in_text_block = false;
+    for (const line of this.statements(raw)) {
+      if (in_style) {
+        in_style = line !== "</style>";
+        continue;
+      }
+      if (skinparam_depth) {
+        if (line.endsWith("{")) skinparam_depth++;
+        else if (line === "}") skinparam_depth--;
+        continue;
+      }
+      if (in_text_block) {
+        in_text_block = !TEXT_BLOCK_END.test(line);
+        lines.push({ text: line, keep: true });
+        continue;
+      }
+      if (line === "<style>") in_style = true;
+      else if (/^skinparam\b.*\{$/.test(line)) skinparam_depth = 1;
+      if (in_style || skinparam_depth || NOISE_LINE.test(line)) continue;
+      const start = line.match(/^@start\w+\s*(.*)$/);
+      if (start) {
+        if (start[1]) lines.push({ text: `# ${start[1].replace(/"/g, "")}`, keep: true });
+        continue;
+      }
+      const [, alias, label] = line.match(MACRO_ALIAS) || line.match(ALIAS_AS_LABEL) || [];
+      const [, as_label, as_alias] = alias ? [] : line.match(LABEL_AS_ALIAS) || [];
+      if (alias || as_alias) labels.set(alias || as_alias, (label || as_label).replace(/\\n/g, " "));
+      in_text_block = TEXT_BLOCK_START.test(line);
+      lines.push({ text: line, keep: !!(alias || as_alias) || line.startsWith("'") });
+    }
+    if (!labels.size) return lines.map((line) => line.text).join("\n");
+    const alias_re = new RegExp(`"[^"]*"|\\b(${[...labels.keys()].join("|")})\\b`, "g");
+    return lines.map(({ text, keep }) => {
+      if (keep) return text;
+      const colon = text.indexOf(" : ");
+      const head = colon < 0 ? text : text.slice(0, colon);
+      return head.replace(alias_re, (match, alias) => alias ? `"${labels.get(alias)}"` : match) + text.slice(head.length);
+    }).join("\n");
+  }
+  // Trimmed non-empty lines. A line with an open quote joins the next lines.
+  statements(raw) {
+    const result = [];
+    let open = "";
+    for (const raw_line of raw.split("\n")) {
+      const line = open ? `${open} ${raw_line.trim()}` : raw_line.trim();
+      const is_open = !line.startsWith("'") && (line.match(/"/g) || []).length % 2 === 1;
+      open = is_open ? line : "";
+      if (line && !is_open) result.push(line);
+    }
+    if (open) result.push(open);
+    return result;
+  }
+};
+__publicField(PumlSourceContentAdapter, "extensions", ["puml", "plantuml"]);
+
 // src/register.js
+var ADAPTERS = [BpmnSourceContentAdapter, PumlSourceContentAdapter];
+var EXTENSIONS = ADAPTERS.flatMap((Adapter) => Adapter.extensions);
+var is_supported = (path) => EXTENSIONS.some((ext) => path.toLowerCase().endsWith(`.${ext}`));
 function host_file_adapter(env) {
   const canvas = env.config?.collections?.smart_sources?.source_adapters?.canvas;
   const base = canvas && Object.getPrototypeOf(canvas);
   return typeof base?.init_items === "function" ? base : null;
 }
-function register_bpmn_adapter(main, env) {
+function register_adapters(main, env) {
   const SmartEnv = env.constructor;
   const base = host_file_adapter(env);
   if (base) {
-    Object.setPrototypeOf(BpmnSourceContentAdapter, base);
-    Object.setPrototypeOf(BpmnSourceContentAdapter.prototype, base.prototype);
+    Object.setPrototypeOf(FileTextSourceContentAdapter, base);
+    Object.setPrototypeOf(FileTextSourceContentAdapter.prototype, base.prototype);
   } else {
-    console.warn("Smart Connections BPMN: FileSourceContentAdapter not found. The adapter runs without its base class.");
+    console.warn("Smart Connections BPMN: FileSourceContentAdapter not found. The adapters run without the host base class.");
   }
   SmartEnv.add_main(main, {
     version: SmartEnv.version,
     collections: {
       smart_sources: {
         source_adapters: {
-          bpmn: BpmnSourceContentAdapter
+          bpmn: BpmnSourceContentAdapter,
+          puml: PumlSourceContentAdapter
         }
       }
     }
   });
 }
-async function index_bpmn_files(env) {
+async function index_files(env) {
   const sources = env.smart_sources;
   if (!sources) return;
   sources._source_adapters = null;
-  const paths = Object.keys(sources.fs.files).filter((path) => path.toLowerCase().endsWith(".bpmn"));
+  const paths = Object.keys(sources.fs.files).filter(is_supported);
   paths.forEach((path) => {
     if (sources.items[path]) sources.items[path]._source_adapter = null;
   });
@@ -605,13 +695,13 @@ var SmartConnectionsBpmnPlugin = class extends import_obsidian.Plugin {
     const env = window.smart_env;
     if (!env) return false;
     if (!this.registered) {
-      register_bpmn_adapter(this, env);
+      register_adapters(this, env);
       this.registered = true;
-      console.log("Smart Connections BPMN: Registered .bpmn adapter");
+      console.log("Smart Connections BPMN: Registered .bpmn and .puml adapters");
     }
     if (env.state === "load_error") return true;
     if (env.state !== "loaded") return false;
-    index_bpmn_files(env).catch((err) => console.error("Smart Connections BPMN: Index of .bpmn files failed", err));
+    index_files(env).catch((err) => console.error("Smart Connections BPMN: Index of files failed", err));
     return true;
   }
   onunload() {

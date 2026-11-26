@@ -1,6 +1,6 @@
 {
   "name": "obsidian-smart-connections-bpmn",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "BPMN file indexing for Smart Connections",
   "main": "main.js",
