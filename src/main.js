@@ -1,41 +1,30 @@
 import { Plugin } from 'obsidian';
-import { BpmnSourceContentAdapter } from './bpmn_source_adapter.js';
+import { register_bpmn_adapter, index_bpmn_files } from './register.js';
 
 export default class SmartConnectionsBpmnPlugin extends Plugin {
 
   onload() {
-    // SmartEnv stores its instance on window.smart_env (the global_ref pattern).
-    // Wait for layout ready — same pattern as upstream companion plugins.
-    this.app.workspace.onLayoutReady(() => {
-      this.register_adapter();
-    });
+    // Register before SmartEnv loads. SmartEnv scans the vault files one time, on layout ready.
+    const timer = window.setInterval(() => {
+      if (this.sync_with_env()) window.clearInterval(timer);
+    }, 100);
+    this.registerInterval(timer);
+    this.sync_with_env();
   }
 
-  register_adapter() {
+  // Returns true when no more work remains.
+  sync_with_env() {
     const env = window.smart_env;
-    if (!env) {
-      console.warn(
-        'Smart Connections BPMN: SmartEnv not found. '
-        + 'Make sure Smart Connections is installed and enabled.'
-      );
-      return;
+    if (!env) return false;
+    if (!this.registered) {
+      register_bpmn_adapter(this, env);
+      this.registered = true;
+      console.log('Smart Connections BPMN: Registered .bpmn adapter');
     }
-
-    // Use SmartEnv.add_main() to merge our adapter config into the environment.
-    // version must be included — the config getter requires it and checks minor >= 4.
-    const SmartEnv = env.constructor;
-    SmartEnv.add_main(this, {
-      version: "2.4.0",
-      collections: {
-        smart_sources: {
-          source_adapters: {
-            bpmn: BpmnSourceContentAdapter,
-          },
-        },
-      },
-    });
-
-    console.log('Smart Connections BPMN: Registered .bpmn adapter');
+    if (env.state === 'load_error') return true;
+    if (env.state !== 'loaded') return false;
+    index_bpmn_files(env).catch((err) => console.error('Smart Connections BPMN: Index of .bpmn files failed', err));
+    return true;
   }
 
   onunload() {
