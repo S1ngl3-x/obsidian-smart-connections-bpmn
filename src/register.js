@@ -34,7 +34,7 @@ export async function index_bpmn_files(env) {
   const sources = env.smart_sources;
   if (!sources) return;
   sources._source_adapters = null;
-  const paths = Object.keys(sources.fs.files).filter((path) => path.endsWith('.bpmn'));
+  const paths = Object.keys(sources.fs.files).filter((path) => path.toLowerCase().endsWith('.bpmn'));
   // A plugin reload leaves sources with an adapter of the old class.
   paths.forEach((path) => { if (sources.items[path]) sources.items[path]._source_adapter = null; });
   const new_paths = paths.filter((path) => !sources.items[path]);

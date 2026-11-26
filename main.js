@@ -580,7 +580,7 @@ async function index_bpmn_files(env) {
   const sources = env.smart_sources;
   if (!sources) return;
   sources._source_adapters = null;
-  const paths = Object.keys(sources.fs.files).filter((path) => path.endsWith(".bpmn"));
+  const paths = Object.keys(sources.fs.files).filter((path) => path.toLowerCase().endsWith(".bpmn"));
   paths.forEach((path) => {
     if (sources.items[path]) sources.items[path]._source_adapter = null;
   });
@@ -594,18 +594,24 @@ async function index_bpmn_files(env) {
 // src/main.js
 var SmartConnectionsBpmnPlugin = class extends import_obsidian.Plugin {
   onload() {
-    if (this.register_adapter()) return;
     const timer = window.setInterval(() => {
-      if (this.register_adapter()) window.clearInterval(timer);
+      if (this.sync_with_env()) window.clearInterval(timer);
     }, 100);
     this.registerInterval(timer);
+    this.sync_with_env();
   }
-  register_adapter() {
+  // Returns true when no more work remains.
+  sync_with_env() {
     const env = window.smart_env;
     if (!env) return false;
-    register_bpmn_adapter(this, env);
-    env.constructor.wait_for().then(index_bpmn_files);
-    console.log("Smart Connections BPMN: Registered .bpmn adapter");
+    if (!this.registered) {
+      register_bpmn_adapter(this, env);
+      this.registered = true;
+      console.log("Smart Connections BPMN: Registered .bpmn adapter");
+    }
+    if (env.state === "load_error") return true;
+    if (env.state !== "loaded") return false;
+    index_bpmn_files(env).catch((err) => console.error("Smart Connections BPMN: Index of .bpmn files failed", err));
     return true;
   }
   onunload() {
